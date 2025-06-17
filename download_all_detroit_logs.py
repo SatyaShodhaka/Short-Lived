@@ -29,66 +29,70 @@ class DetroitLogDownloader:
     def find_detroit_logs_in_split(self, split):
         """Find all Detroit logs in a specific split."""
         
-        print(f"\nSearching for Detroit logs in {split} split...")
+        print(f"\n🔍 Searching for Detroit logs in {split} split...")
+        
+        # Strategy: Sample logs to find Detroit ones
+        # Get list of all logs first
+        print(f"   Getting log list for {split}...")
         
         try:
-            # Get list of all logs
-            print(f"   Getting log list for {split}...")
-            cmd = f"s5cmd ls s3://argoverse/datasets/av2/sensor/{split}/"
+            cmd = f"aws s3 ls --no-sign-request s3://argoverse/datasets/av2/sensor/{split}/"
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
             
             if result.returncode != 0:
-                print(f"   Failed to list logs in {split}")
+                print(f"   ❌ Failed to list logs in {split}")
                 return []
             
             # Extract log IDs
             log_ids = [] 
             for line in result.stdout.strip().split('\n'):
-                if 'DIR' in line:
-                    # Extract UUID from "DIR uuid/"
-                    match = re.search(r'DIR\s+([a-f0-9-]+)/', line)
+                if 'PRE' in line:
+                    # Extract UUID from "PRE uuid/"
+                    match = re.search(r'PRE\s+([a-f0-9-]+)/', line)
                     if match:
                         log_ids.append(match.group(1))
             
             print(f"   Found {len(log_ids)} total logs in {split}")
             
-            # Process all logs to find Detroit data
+            # Sample logs to check for Detroit data (checking all would be too slow)
+            sample_size =100000000  # Check first 50 logs
+            print(f"   Sampling {sample_size} logs to find Detroit data...")
+            
             detroit_logs = []
-            total_logs = len(log_ids)
             
             for i, log_id in enumerate(log_ids):
-                if i % 100 == 0:  # Progress update every 100 logs
-                    print(f"   Checking log {i+1}/{total_logs}...")
+                if i % 10 == 0:
+                    print(f"   Checking log {i+1}/{sample_size}...")
                 
                 # Check if this log has Detroit map data
-                map_cmd = f"s5cmd ls s3://argoverse/datasets/av2/sensor/{split}/{log_id}/map/ | grep DTW"
+                map_cmd = f"aws s3 ls --no-sign-request s3://argoverse/datasets/av2/sensor/{split}/{log_id}/map/ | grep DTW"
                 map_result = subprocess.run(map_cmd, shell=True, capture_output=True, text=True, timeout=30)
                 
                 if map_result.returncode == 0 and map_result.stdout.strip():
                     detroit_logs.append(log_id)
-                    print(f"   Found Detroit log: {log_id}")
+                    print(f"   ✅ Found Detroit log: {log_id}")
             
-            print(f"   Found {len(detroit_logs)} Detroit logs in {split}")
+            print(f"   🎯 Found {len(detroit_logs)} Detroit logs in {split} (from {sample_size} sampled)")
             return detroit_logs
             
         except subprocess.TimeoutExpired:
-            print(f"   Timeout while searching {split}")
+            print(f"   ⏰ Timeout while searching {split}")
             return []
         except Exception as e:
-            print(f"   Error searching {split}: {e}")
+            print(f"   ❌ Error searching {split}: {e}")
             return []
     
     def find_all_detroit_logs(self):
         """Find Detroit logs across all splits."""
         
-        print("Finding Detroit Logs Across All Splits")
+        print("🚗 Finding Detroit Logs Across All Splits")
         print("=" * 50)
         
         for split in ['test', 'val', 'train']:  # Start with smaller splits
             self.found_logs[split] = self.find_detroit_logs_in_split(split)
         
         total_found = sum(len(logs) for logs in self.found_logs.values())
-        print(f"\nDISCOVERY SUMMARY:")
+        print(f"\n📊 DISCOVERY SUMMARY:")
         for split, logs in self.found_logs.items():
             print(f"   {split}: {len(logs)} Detroit logs")
         print(f"   Total: {total_found} Detroit logs found")
@@ -112,7 +116,7 @@ class DetroitLogDownloader:
         # Find and download the Detroit map file
         try:
             # List map files to find the DTW one
-            map_cmd = f"s5cmd ls s3://argoverse/datasets/av2/sensor/{split}/{log_id}/map/"
+            map_cmd = f"aws s3 ls --no-sign-request s3://argoverse/datasets/av2/sensor/{split}/{log_id}/map/"
             map_result = subprocess.run(map_cmd, shell=True, capture_output=True, text=True, timeout=30)
             
             if map_result.returncode == 0:
@@ -135,24 +139,24 @@ class DetroitLogDownloader:
             local_path = file_info['local']
             
             if local_path.exists():
-                print(f"      Skipping {file_info['name']} (already exists)")
+                print(f"      ⏭️  Skipping {file_info['name']} (already exists)")
                 downloaded += 1
                 continue
             
             try:
-                cmd = f"s5cmd cp {s3_path} {local_path}"
+                cmd = f"aws s3 cp --no-sign-request {s3_path} {local_path}"
                 result = subprocess.run(cmd, shell=True, timeout=300)  # 5 min timeout
                 
                 if result.returncode == 0 and local_path.exists():
-                    print(f"      Downloaded {file_info['name']}")
+                    print(f"      ✅ Downloaded {file_info['name']}")
                     downloaded += 1
                 else:
-                    print(f"      Failed to download {file_info['name']}")
+                    print(f"      ❌ Failed to download {file_info['name']}")
                     
             except subprocess.TimeoutExpired:
-                print(f"      Timeout downloading {file_info['name']}")
+                print(f"      ⏰ Timeout downloading {file_info['name']}")
             except Exception as e:
-                print(f"      Error downloading {file_info['name']}: {e}")
+                print(f"      ❌ Error downloading {file_info['name']}: {e}")
         
         return downloaded > 0
     
@@ -165,27 +169,27 @@ class DetroitLogDownloader:
                 all_downloads.append((split, log_id))
         
         if not all_downloads:
-            print("No Detroit logs to download")
+            print("❌ No Detroit logs to download")
             return
         
-        print(f"\nDownloading data for {len(all_downloads)} Detroit logs...")
+        print(f"\n📥 Downloading data for {len(all_downloads)} Detroit logs...")
         print(f"Using {max_workers} parallel downloads")
         
         def download_worker(split_log):
             split, log_id = split_log
-            print(f"   Downloading {split}/{log_id[:8]}...")
+            print(f"   📦 Downloading {split}/{log_id[:8]}...")
             
             try:
                 success = self.download_log_data(split, log_id)
                 if success:
                     self.download_stats['downloaded'] += 1
-                    return f"Success: {split}/{log_id[:8]}"
+                    return f"✅ {split}/{log_id[:8]}"
                 else:
                     self.download_stats['failed'] += 1
-                    return f"Failed: {split}/{log_id[:8]}"
+                    return f"❌ {split}/{log_id[:8]}"
             except Exception as e:
                 self.download_stats['failed'] += 1
-                return f"Error: {split}/{log_id[:8]}: {e}"
+                return f"💥 {split}/{log_id[:8]}: {e}"
         
         # Download with thread pool
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -225,13 +229,13 @@ class DetroitLogDownloader:
         with open(manifest_file, 'w') as f:
             json.dump(manifest, f, indent=2)
         
-        print(f"Manifest saved: {manifest_file}")
+        print(f"📄 Manifest saved: {manifest_file}")
         return manifest_file
 
 def main():
     """Main function."""
     
-    print("Detroit Logs Downloader - Argoverse 2")
+    print("🚗 Detroit Logs Downloader - Argoverse 2")
     print("Download all Detroit logs from train, val, test splits")
     print("=" * 60)
     
@@ -242,8 +246,8 @@ def main():
     found = downloader.find_all_detroit_logs()
     
     if not found:
-        print("\nNo Detroit logs found!")
-        print("This might be because:")
+        print("\n❌ No Detroit logs found!")
+        print("💡 This might be because:")
         print("   1. Detroit logs are in the unsampled portion")
         print("   2. Different city code is used")
         print("   3. Network timeouts during search")
@@ -251,7 +255,7 @@ def main():
     
     # Ask user confirmation before downloading
     total_logs = sum(len(logs) for logs in downloader.found_logs.values())
-    print(f"\nProceed with downloading {total_logs} Detroit logs?")
+    print(f"\n🤔 Proceed with downloading {total_logs} Detroit logs?")
     print("   This will download pose files and map data for each log.")
     print("   Estimated size: ~1-5MB per log")
     
@@ -261,7 +265,7 @@ def main():
         return
     
     # Download all data
-    print(f"\nStarting download...")
+    print(f"\n🚀 Starting download...")
     downloader.download_all_detroit_data(max_workers=3)
     
     # Create manifest
@@ -269,14 +273,14 @@ def main():
     
     # Summary
     print(f"\n" + "="*60)
-    print("DOWNLOAD COMPLETE")
+    print("📋 DOWNLOAD COMPLETE")
     print("="*60)
-    print(f"Successfully downloaded: {downloader.download_stats['downloaded']}")
-    print(f"Failed downloads: {downloader.download_stats['failed']}")
-    print(f"Data saved in: {downloader.base_dir}")
-    print(f"Manifest: {manifest_file}")
+    print(f"✅ Successfully downloaded: {downloader.download_stats['downloaded']}")
+    print(f"❌ Failed downloads: {downloader.download_stats['failed']}")
+    print(f"📁 Data saved in: {downloader.base_dir}")
+    print(f"📄 Manifest: {manifest_file}")
     
-    print(f"\nDirectory structure:")
+    print(f"\n🗂️  Directory structure:")
     print(f"   detroit_logs/")
     for split in ['train', 'val', 'test']:
         split_dir = downloader.base_dir / split
@@ -289,7 +293,7 @@ def main():
             if len(log_dirs) > 2:
                 print(f"   │   └── ... and {len(log_dirs)-2} more")
     
-    print(f"\nNext step: Run the KML generation script!")
+    print(f"\n🚀 Next step: Run the KML generation script!")
     print(f"   python generate_detroit_kml_from_logs.py")
 
 if __name__ == "__main__":

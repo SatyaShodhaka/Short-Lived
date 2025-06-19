@@ -6,7 +6,7 @@ import numpy as np
 
 DETROIT_CITY_NAME = "DTW"
 LOGS_BASE = "detroit_logs"
-OUTPUT_KML = "detroit_ego_trajectories_test.kml"
+OUTPUT_KML = "detroit_ego_trajectories"
 
 
 def get_gps_from_city_coords(x, y, z):

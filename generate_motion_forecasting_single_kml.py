@@ -15,10 +15,113 @@ import argparse
 from pathlib import Path
 from av2.geometry.utm import convert_city_coords_to_wgs84, CityName
 import numpy as np
-from typing import List, Dict, Any, Tuple
-from robust_detroit_geofencing import RobustDetroitGeofence
+from typing import List, Dict, Any, Tuple, Optional
+from shapely.geometry import Point, Polygon
 
 MOTION_FORECASTING_BASE = "motion_forecasting"
+
+class RobustDetroitGeofence:
+    """
+    Robust geo-fencing for Detroit region using official city boundaries and AV2 coordinate system.
+    """
+    def __init__(self):
+        self.detroit_polygon_gps = [
+            (-83.287, 42.255),
+            (-83.287, 42.450),
+            (-82.910, 42.450),
+            (-82.910, 42.255),
+            (-83.287, 42.255)
+        ]
+        self.detroit_polygon = Polygon(self.detroit_polygon_gps)
+        self.detroit_city_code = CityName.DTW
+        self.coordinate_cache = {}
+    def coordinates_to_gps(self, x: float, y: float, z: float = 0.0) -> Optional[Tuple[float, float, float]]:
+        cache_key = (x, y)
+        if cache_key in self.coordinate_cache:
+            lat, lon = self.coordinate_cache[cache_key]
+            return lat, lon, z
+        try:
+            point_2d = np.array([[x, y]])
+            lat_lon = convert_city_coords_to_wgs84(point_2d, self.detroit_city_code.value)[0]
+            lat, lon = lat_lon[0], lat_lon[1]
+            self.coordinate_cache[cache_key] = (lat, lon)
+            if abs(lat) > 0.1 and abs(lon) > 0.1:
+                return lat, lon, z
+            else:
+                return None
+        except Exception as e:
+            print(f"Warning: Failed to convert coordinates ({x}, {y}): {e}")
+            return None
+    def is_detroit_by_gps_polygon(self, x: float, y: float, z: float = 0.0) -> bool:
+        gps_coords = self.coordinates_to_gps(x, y, z)
+        if gps_coords is None:
+            return False
+        lat, lon, _ = gps_coords
+        point = Point(lon, lat)
+        return self.detroit_polygon.contains(point)
+    def is_detroit_by_coordinate_ranges(self, x: float, y: float) -> bool:
+        detroit_bounds = {'min_x': 3000, 'max_x': 13000, 'min_y': 2000, 'max_y': 7000}
+        return (detroit_bounds['min_x'] <= x <= detroit_bounds['max_x'] and detroit_bounds['min_y'] <= y <= detroit_bounds['max_y'])
+    def is_detroit_by_city_detection(self, x: float, y: float, z: float = 0.0) -> bool:
+        try:
+            point_2d = np.array([[x, y]])
+            lat_lon = convert_city_coords_to_wgs84(point_2d, self.detroit_city_code.value)[0]
+            if abs(lat_lon[0]) > 0.1 and abs(lat_lon[1]) > 0.1:
+                lat, lon = lat_lon[0], lat_lon[1]
+                michigan_bounds = {'min_lat': 41.5, 'max_lat': 43.0, 'min_lon': -84.5, 'max_lon': -82.0}
+                return (michigan_bounds['min_lat'] <= lat <= michigan_bounds['max_lat'] and michigan_bounds['min_lon'] <= lon <= michigan_bounds['max_lon'])
+            return False
+        except Exception:
+            return False
+    def is_detroit_comprehensive(self, x: float, y: float, z: float = 0.0, method: str = "auto") -> bool:
+        if method == "gps_polygon":
+            return self.is_detroit_by_gps_polygon(x, y, z)
+        elif method == "coordinate_ranges":
+            return self.is_detroit_by_coordinate_ranges(x, y)
+        elif method == "city_detection":
+            return self.is_detroit_by_city_detection(x, y, z)
+        else:
+            city_detection = self.is_detroit_by_city_detection(x, y, z)
+            if city_detection:
+                return self.is_detroit_by_gps_polygon(x, y, z)
+            return False
+    def get_detection_info(self, x: float, y: float, z: float = 0.0) -> Dict[str, Any]:
+        gps_coords = self.coordinates_to_gps(x, y, z)
+        info = {
+            'coordinates': {'x': x, 'y': y, 'z': z},
+            'gps_conversion': gps_coords,
+            'city_detection': self.is_detroit_by_city_detection(x, y, z),
+            'coordinate_ranges': self.is_detroit_by_coordinate_ranges(x, y),
+            'gps_polygon': False,
+            'comprehensive_result': False
+        }
+        if gps_coords:
+            info['gps_polygon'] = self.is_detroit_by_gps_polygon(x, y, z)
+        info['comprehensive_result'] = self.is_detroit_comprehensive(x, y, z)
+        return info
+    def analyze_scenario_location(self, map_data: Dict[str, Any]) -> Dict[str, Any]:
+        sample_coords = []
+        detroit_detections = []
+        if 'lane_segments' in map_data:
+            for i, (lane_id, lane_data) in enumerate(map_data['lane_segments'].items()):
+                if i >= 10:
+                    break
+                if 'left_lane_boundary' in lane_data and lane_data['left_lane_boundary']:
+                    first_point = lane_data['left_lane_boundary'][0]
+                    x, y, z = first_point['x'], first_point['y'], first_point['z']
+                    sample_coords.append((x, y, z))
+                    detroit_detections.append(self.is_detroit_comprehensive(x, y, z))
+        detroit_count = sum(detroit_detections)
+        total_samples = len(detroit_detections)
+        is_detroit_scenario = (detroit_count / total_samples) > 0.5 if total_samples > 0 else False
+        return {
+            'is_detroit': is_detroit_scenario,
+            'detroit_confidence': detroit_count / total_samples if total_samples > 0 else 0.0,
+            'total_samples': total_samples,
+            'detroit_samples': detroit_count,
+            'sample_coordinates': sample_coords[:5],
+            'sample_detections': detroit_detections[:5]
+        }
 
 class MotionForecastingSingleKMLGenerator:
     

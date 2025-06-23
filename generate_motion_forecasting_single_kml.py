@@ -4,6 +4,8 @@ Generate Motion Forecasting HD Maps Single KML
 
 Convert Motion Forecasting HD map data into single KML files per split.
 Supports filtering by region and data types.
+
+Updated with robust Detroit geo-fencing using official AV2 coordinate system.
 """
 
 import json
@@ -14,6 +16,7 @@ from pathlib import Path
 from av2.geometry.utm import convert_city_coords_to_wgs84, CityName
 import numpy as np
 from typing import List, Dict, Any, Tuple
+from robust_detroit_geofencing import RobustDetroitGeofence
 
 MOTION_FORECASTING_BASE = "motion_forecasting"
 
@@ -30,6 +33,9 @@ class MotionForecastingSingleKMLGenerator:
             'drivable_areas': 0,
             'scenarios_processed': 0
         }
+        
+        # Initialize robust Detroit geo-fencing
+        self.detroit_geofence = RobustDetroitGeofence() if detroit_only else None
         
         # Color schemes for different map elements
         self.colors = {
@@ -56,34 +62,34 @@ class MotionForecastingSingleKMLGenerator:
         }
     
     def is_detroit_coordinates(self, x: float, y: float) -> bool:
-        """Check if coordinates are in Detroit region."""
-        detroit_bounds = {
-            'min_x': 3847,
-            'max_x': 12044, 
-            'min_y': 2772,
-            'max_y': 6228
-        }
-        
-        return (detroit_bounds['min_x'] <= x <= detroit_bounds['max_x'] and 
-                detroit_bounds['min_y'] <= y <= detroit_bounds['max_y'])
+        """Check if coordinates are in Detroit region using robust geo-fencing."""
+        if self.detroit_geofence:
+            return self.detroit_geofence.is_detroit_comprehensive(x, y)
+        else:
+            # No Detroit filtering enabled
+            return True
     
     def get_gps_from_coords(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
-        """Convert coordinates to GPS coordinates."""
+        """Convert coordinates to GPS coordinates using robust approach."""
+        if self.detroit_geofence:
+            # Use robust geo-fencing coordinate conversion
+            result = self.detroit_geofence.coordinates_to_gps(x, y, z)
+            if result:
+                return result
+        
+        # Standard multi-city coordinate conversion
         try:
-            # Try different city codes until one works
             city_names = [CityName.DTW, CityName.ATX, CityName.MIA, CityName.PAO, CityName.PIT, CityName.WDC]
             
             for city_name in city_names:
                 try:
                     point_2d = np.array([[x, y]])
                     lat_lon = convert_city_coords_to_wgs84(point_2d, city_name)[0]
-                    # Check if conversion is reasonable (not zero)
                     if abs(lat_lon[0]) > 0.1 and abs(lat_lon[1]) > 0.1:
                         return lat_lon[0], lat_lon[1], z
                 except:
                     continue
             
-            # Fallback for coordinate conversion issues
             return 0.0, 0.0, z
         except:
             return 0.0, 0.0, z
@@ -211,19 +217,15 @@ class MotionForecastingSingleKMLGenerator:
             with open(map_file_path, 'r') as f:
                 map_data = json.load(f)
             
-            if self.detroit_only:
-                is_detroit = False
-                if 'lane_segments' in map_data:
-                    for lane_data in map_data['lane_segments'].values():
-                        if 'left_lane_boundary' in lane_data and lane_data['left_lane_boundary']:
-                            first_point = lane_data['left_lane_boundary'][0]
-                            if self.is_detroit_coordinates(first_point['x'], first_point['y']):
-                                is_detroit = True
-                                break
+            # Check if Detroit filtering is enabled
+            if self.detroit_only and self.detroit_geofence:
+                # Use robust geo-fencing to analyze scenario location
+                analysis = self.detroit_geofence.analyze_scenario_location(map_data)
                 
-                if not is_detroit:
+                if not analysis['is_detroit']:
                     return 0
             
+            # Process lane segments and pedestrian crossings together
             if self.include_lanes:
                 if 'lane_segments' in map_data:
                     features_added += self.add_lane_segments(kml, map_data['lane_segments'], split, scenario_id)
@@ -231,6 +233,7 @@ class MotionForecastingSingleKMLGenerator:
                 if 'pedestrian_crossings' in map_data:
                     features_added += self.add_pedestrian_crossings(kml, map_data['pedestrian_crossings'], split, scenario_id)
             
+            # Process drivable areas separately
             if self.include_drivable:
                 if 'drivable_areas' in map_data:
                     features_added += self.add_drivable_areas(kml, map_data['drivable_areas'], split, scenario_id)
